@@ -1,0 +1,98 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: Exemplo simples de infraestrutura como codigo.
+Metadata:
+  Authors:
+    Description: Carlos Correa (carlos@xtbsolutions.com)
+  License: MIT
+Parameters:
+  KeyName:
+    Description: Nome do par de chaves para instancia de firewall
+    Type: String
+    ConstraintDescription: O par de chaves precisa ter sido previamente criado
+    Default: "carlos-key"
+  SourceCidr:
+    Default: 0.0.0.0/0
+    Description: Range default para acesso SSH
+    Type: String
+Resources:
+## Os recursos que vamos criar
+## Cria um security group para nosso servidor de app
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        Fn::ImportValue:
+          !Sub "cfn-exemplo-rnp-vpc-Vpc"
+      GroupDescription: Gerencia acessos ao gateway da rede privada
+      SecurityGroupIngress:
+      - CidrIp: 172.17.0.0/16
+        FromPort: 22
+        IpProtocol: tcp
+        ToPort: 22
+      - CidrIp: 0.0.0.0/0
+        FromPort: 80
+        IpProtocol: tcp
+        ToPort: 80
+
+## Cria uma interface de rede para nosso gateway
+  AppXface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId:
+        Fn::ImportValue:
+          !Sub "cfn-exemplo-rnp-vpc-PrivateSubnet1"
+      Description: Interface para o servidor de aplicacao
+      GroupSet:
+      - !Ref AppSecurityGroup
+      SourceDestCheck: false
+      Tags:
+        -
+          Key: Name
+          Value: AppXface
+
+## Cria nosso servidor de app
+  Ec2App:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                 [main]
+                 stack=${AWS::StackId}
+                 region=${AWS::Region}
+                 interval=1
+                 verbose=true
+              mode: '000400'
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.Ec2App.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init --stack cfn-exemplo-rnp-app --resource Ec2App --region us-east-1
+                runas=root              
+    Properties:
+      ImageId: ami-0947d2ba12ee1ff75
+      InstanceType: t3a.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        -
+          NetworkInterfaceId: !Ref AppXface
+          DeviceIndex: 0
+      Tags:
+        -
+          Key: Name
+          Value: Servidor App
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum -y update
+
+          yum install aws-cfn-bootstrap
+          /opt/aws/bin/cfn-init --stack cfn-exemplo-rnp-app --resource Ec2App --region us-east-1
+          systemctl start cfn-hup
+          systemctl enable cfn-hup
