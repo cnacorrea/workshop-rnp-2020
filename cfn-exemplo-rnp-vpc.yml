@@ -6,25 +6,22 @@ Metadata:
     Description: Carlos Correa (carlos@xtbsolutions.com)
   License: MIT
 Parameters:
-## Parametros que vamos pedir para o usuario na criacao de
-## nosso ambiente
   VpcName:
-    Description: Nome do VPC
+    Description: VPC name
     Type: String
-    ConstraintDescription: Precisa ser um nome VPC valido
-    Default: "cfn-exemplo-rnp"
+    ConstraintDescription: Must be a valid VPC name.
+    Default: "cfn-exemplo-rnp-vpc"
   KeyName:
-    Description: Nome do par de chaves para instancia de firewall
+    Description: Key pair
     Type: String
-    ConstraintDescription: O par de chaves precisa ter sido previamente criado
+    ConstraintDescription: Key pair used for NAT instance access.
     Default: "carlos-key"
   SourceCidr:
-    Default: 0.0.0.0/0
-    Description: Range default para acesso SSH
     Type: String
+    Description: IP range for SSH
+    ConstraintDescription: Must be a valid IP/netmask entry.
+    Default: 0.0.0.0/0
 Resources:
-## Os recursos que vamos criar
-## VPC - datacenter virtual da AWS
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -34,22 +31,18 @@ Resources:
       Tags:
       - Key: Name
         Value: !Ref VpcName
-## Gateway de Internet para nosso VPC
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
       - Key: Name
         Value: !Ref VpcName
-## Conecta o nosso gateway ao VPC
   GatewayToInternet:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref Vpc
       InternetGatewayId: !Ref InternetGateway
 
-## Criando nossas tabelas de roteamento
-## Tabela de roteamento da rede publica
   RouteTablePublic:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -57,16 +50,21 @@ Resources:
       Tags:
       - Key: Name
         Value: RouteTablePublic
-## Tabela de roteamento da rede privada
-  RouteTablePrivate:
+  RouteTablePrivate1:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref Vpc
       Tags:
       - Key: Name
-        Value: RouteTablePrivate
+        Value: RouteTablePrivate1
+  RouteTablePrivate2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: Name
+        Value: RouteTablePrivate2
 
-## Tabela da rede publica aponta para o Internet Gateway
   PublicRoute:
     Type: AWS::EC2::Route
     Properties:
@@ -75,7 +73,6 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId:
         Ref: InternetGateway
-## Cria a subrede publica
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -88,14 +85,29 @@ Resources:
         Value: !Ref VpcName
       - Key: Name
         Value: PublicSubnet1
-## Associa a rede publica com a tabela de roteamento publica
   RouteTableAssociationPublicSubnet1:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnet1
       RouteTableId: !Ref RouteTablePublic
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 172.17.1.0/24
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: vpc_name
+        Value: !Ref VpcName
+      - Key: Name
+        Value: PublicSubnet2
+  RouteTableAssociationPublicSubnet2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref RouteTablePublic
 
-## Cria a subrede privada
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -108,58 +120,83 @@ Resources:
         Value: !Ref VpcName
       - Key: Name
         Value: PrivateSubnet1
-## Associa a rede privada com a tabela de roteamento privada
   RouteTableAssociationPrivateSubnet1:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PrivateSubnet1
-      RouteTableId: !Ref RouteTablePrivate
+      RouteTableId: !Ref RouteTablePrivate1
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 172.17.129.0/24
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      MapPublicIpOnLaunch: false
+      Tags:
+      - Key: vpc_name
+        Value: !Ref VpcName
+      - Key: Name
+        Value: PrivateSubnet2
+  RouteTableAssociationPrivateSubnet2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref RouteTablePrivate2
 
-## Aloca um IP para nosso gateway da rede privada
-  VpnGWAddress:
+  NATGW1Address:
     Type: AWS::EC2::EIP
     Properties:
       Domain: vpc
-      InstanceId: !Ref Ec2Instance
+      InstanceId: !Ref NATGW1Instance
+  NATGW2Address:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref NATGW2Instance
 
-## Cria um security group para nosso gateway da rede privada
-  VPNSecurityGroup:
+  NATGWSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       VpcId: !Ref Vpc
-      GroupDescription: Gerencia acessos ao gateway da rede privada
+      GroupDescription: Manage access to the private subnet gateways
       SecurityGroupIngress:
       - CidrIp: 0.0.0.0/0
         FromPort: 22
         IpProtocol: tcp
         ToPort: 22
       - CidrIp: 0.0.0.0/0
-        FromPort: 1194
-        IpProtocol: udp
-        ToPort: 1195
-      - CidrIp: 10.0.0.0/8
-        IpProtocol: "-1"
+        FromPort: 80
+        IpProtocol: tcp
+        ToPort: 80
       - CidrIp: 172.16.0.0/12
         IpProtocol: "-1"
-      - CidrIp: 192.168.0.0/16
-        IpProtocol: "-1"
 
-## Cria uma interface de rede para nosso gateway
-  VPNXface:
+  NATGW1Iface:
     Type: AWS::EC2::NetworkInterface
     Properties:
       SubnetId: !Ref PublicSubnet1
-      Description: Interface para o gateway da rede privada
+      Description: NIC for the private subnet 1 gateway
       GroupSet:
-      - !Ref VPNSecurityGroup
+      - !Ref NATGWSecurityGroup
       SourceDestCheck: false
       Tags:
         -
           Key: Name
-          Value: VPNXface
+          Value: NATGW1Iface
+  NATGW2Iface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      Description: NIC for the private subnet 2 gateway
+      GroupSet:
+      - !Ref NATGWSecurityGroup
+      SourceDestCheck: false
+      Tags:
+        -
+          Key: Name
+          Value: NATGW2Iface
 
-## Cria nosso gateway da rede privada
-  Ec2Instance:
+  NATGW1Instance:
     Type: AWS::EC2::Instance
     Metadata:
       AWS::CloudFormation::Init:
@@ -179,8 +216,8 @@ Resources:
               content: !Sub |
                 [cfn-auto-reloader-hook]
                 triggers=post.update
-                path=Resources.Ec2Instance.Metadata.AWS::CloudFormation::Init
-                action=/opt/aws/bin/cfn-init --stack ${AWS::StackName} --resource Ec2Instance --region us-east-1
+                path=Resources.NATGW1Instance.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init --stack ${AWS::StackName} --resource NATGW1Instance --region us-east-1
                 runas=root              
             /etc/sysctl.d/99-VPNinstance.conf:
               content: !Sub |
@@ -197,6 +234,9 @@ Resources:
                 /sbin/iptables -t nat -F
                 /sbin/iptables -F
 
+                # evita load balancer
+                /sbin/iptables -t nat -A PREROUTING -i eth0 -p tcp \! -s 172.16.0.0/12 --dport 80 -j DNAT --to 172.17.128.31
+
                 /sbin/iptables -t nat -A POSTROUTING -d 10.0.0.0/8 -j ACCEPT
                 /sbin/iptables -t nat -A POSTROUTING -d 172.16.0.0/12 -j ACCEPT
                 /sbin/iptables -t nat -A POSTROUTING -d 192.168.0.0/16 -j ACCEPT
@@ -212,61 +252,163 @@ Resources:
               group: "root"
     Properties:
       ImageId: ami-0947d2ba12ee1ff75
-      InstanceType: t3a.micro
+      InstanceType: t3a.nano
       KeyName: !Ref KeyName
       NetworkInterfaces:
         -
-          NetworkInterfaceId: !Ref VPNXface
+          NetworkInterfaceId: !Ref NATGW1Iface
           DeviceIndex: 0
       Tags:
         -
           Key: Name
-          Value: VPN Instance
+          Value: NATGW1Instance
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
           yum -y update
 
           yum install aws-cfn-bootstrap
-          /opt/aws/bin/cfn-init --stack ${AWS::StackName} --resource Ec2Instance --region us-east-1
+          /opt/aws/bin/cfn-init --stack ${AWS::StackName} --resource NATGW1Instance --region us-east-1
+          systemctl start cfn-hup
+          systemctl enable cfn-hup
+          /usr/local/sbin/firewall.sh
+          sysctl --system
+  NATGW2Instance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                 [main]
+                 stack=${AWS::StackId}
+                 region=${AWS::Region}
+                 interval=1
+                 verbose=true
+              mode: '000400'
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.NATGW1Instance.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init --stack ${AWS::StackName} --resource NATGW2Instance --region us-east-1
+                runas=root              
+            /etc/sysctl.d/99-VPNinstance.conf:
+              content: !Sub |
+                net.ipv4.ip_forward = 1
+              mode: "000644"
+              owner: "root"
+              group: "root"
+            /usr/local/sbin/firewall.sh:
+              content: !Sub |
+                #!/bin/bash
+
+                /sbin/iptables -t nat -X
+                /sbin/iptables -X
+                /sbin/iptables -t nat -F
+                /sbin/iptables -F
+
+                # evita load balancer
+                /sbin/iptables -t nat -A PREROUTING -i eth0 -p tcp \! -s 172.16.0.0/12 --dport 80 -j DNAT --to 172.17.128.31
+
+                /sbin/iptables -t nat -A POSTROUTING -d 10.0.0.0/8 -j ACCEPT
+                /sbin/iptables -t nat -A POSTROUTING -d 172.16.0.0/12 -j ACCEPT
+                /sbin/iptables -t nat -A POSTROUTING -d 192.168.0.0/16 -j ACCEPT
+                /sbin/iptables -t nat -A POSTROUTING \! -o lo -j MASQUERADE
+              mode: "000755"
+              owner: "root"
+              group: "root"
+            /etc/crontab:
+              content: !Sub |
+                */5 * * * * root /usr/local/sbin/firewall.sh
+              mode: "000644"
+              owner: "root"
+              group: "root"
+    Properties:
+      ImageId: ami-0947d2ba12ee1ff75
+      InstanceType: t3a.nano
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        -
+          NetworkInterfaceId: !Ref NATGW2Iface
+          DeviceIndex: 0
+      Tags:
+        -
+          Key: Name
+          Value: NATGW2Instance
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum -y update
+
+          yum install aws-cfn-bootstrap
+          /opt/aws/bin/cfn-init --stack ${AWS::StackName} --resource NATGW2Instance --region us-east-1
           systemctl start cfn-hup
           systemctl enable cfn-hup
           /usr/local/sbin/firewall.sh
           sysctl --system
 
-## Associa a rota default da rede privada com a interface da instancia privada
   PrivateRoute:
     Type: AWS::EC2::Route
     Properties:
       RouteTableId:
-        Ref: RouteTablePrivate
+        Ref: RouteTablePrivate1
       DestinationCidrBlock: 0.0.0.0/0
       NetworkInterfaceId:
-        Ref: VPNXface
+        Ref: NATGW1Iface
+  PrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:
+        Ref: RouteTablePrivate2
+      DestinationCidrBlock: 0.0.0.0/0
+      NetworkInterfaceId:
+        Ref: NATGW2Iface
 
 Outputs:
 ## O que queremos exportar para o mundo
   Vpc:
-    Description: ID do nosso VPC
+    Description: ID for the VPC
     Value: !Ref Vpc
     Export:
       Name:
         Fn::Sub: "${AWS::StackName}-Vpc"
   PublicSubnet1:
-    Description: ID da nossa subrede publica 1
+    Description: ID for Public Subnet 1
     Value: !Ref PublicSubnet1
     Export:
       Name:
         Fn::Sub: "${AWS::StackName}-PublicSubnet1"
+  PublicSubnet2:
+    Description: ID for Public Subnet 2
+    Value: !Ref PublicSubnet2
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-PublicSubnet2"
   PrivateSubnet1:
-    Description: ID da nossa subrede privada 1
+    Description: ID for Private Subnet 1
     Value: !Ref PrivateSubnet1
     Export:
       Name:
         Fn::Sub: "${AWS::StackName}-PrivateSubnet1"
-  VpnGWAddress:
-    Description: IP publico do gateway da subrede privada 1
-    Value: !Ref VpnGWAddress
+  PrivateSubnet2:
+    Description: ID for Private Subnet 2
+    Value: !Ref PrivateSubnet2
     Export:
       Name:
-        Fn::Sub: "${AWS::StackName}-VpnGWAddress"
+        Fn::Sub: "${AWS::StackName}-PrivateSubnet2"
+  NATGW1Address:
+    Description: Public IP address for the Private Subnet 1 gateway
+    Value: !Ref NATGW1Address
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-NATGW1Address"
+  NATGW2Address:
+    Description: Public IP address for the Private Subnet 2 gateway
+    Value: !Ref NATGW2Address
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-NATGW2Address"

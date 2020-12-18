@@ -7,7 +7,7 @@ Metadata:
   License: MIT
 Parameters:
   KeyName:
-    Description: Nome do par de chaves para instancia de firewall
+    Description: Nome do par de chaves
     Type: String
     ConstraintDescription: O par de chaves precisa ter sido previamente criado
     Default: "carlos-key"
@@ -17,6 +17,61 @@ Parameters:
     Type: String
 Resources:
 ## Os recursos que vamos criar
+## Uma senha para nosso banco de dados
+  SenhaWordpress:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+        Name: 'SenhaWordpress'
+        Description: 'Senha para o banco de dados do WordPress.'
+        GenerateSecretString:
+            RequireEachIncludedType: True
+            SecretStringTemplate: '{"username": "wordpress"}'
+            GenerateStringKey: 'password'
+            PasswordLength: 30
+            ExcludeCharacters: '"@/\'
+
+  GrupoSubnetRDS:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Grupo de seguranca para o banco
+      SubnetIds:
+        - Fn::ImportValue:
+            !Sub "cfn-exemplo-rnp-vpc-PrivateSubnet1"
+        - Fn::ImportValue:
+            !Sub "cfn-exemplo-rnp-vpc-PrivateSubnet2"
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        Fn::ImportValue:
+            !Sub "cfn-exemplo-rnp-vpc-Vpc"
+      GroupDescription: Security group para o banco RDS
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+        CidrIp: 172.17.0.0/16
+  WordpressRDS:
+    Type: AWS::RDS::DBInstance
+    Properties:
+        AllocatedStorage: 20
+        BackupRetentionPeriod: 0
+        DBName: wordpress
+        DBInstanceClass: db.t2.micro
+        Engine: mysql
+        MasterUsername: !Join ['', ['{{resolve:secretsmanager:', !Ref SenhaWordpress, ':SecretString:username}}' ]]
+        MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref SenhaWordpress, ':SecretString:password}}' ]]
+        DBInstanceIdentifier: 'wordpress'
+        DBSubnetGroupName: !Ref GrupoSubnetRDS
+        VPCSecurityGroups:
+          - !Ref RDSSecurityGroup
+  SenhaRDSAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+        SecretId: !Ref SenhaWordpress
+        TargetId: !Ref WordpressRDS
+        TargetType: AWS::RDS::DBInstance
+
 ## Cria um security group para nosso servidor de app
   AppSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -24,7 +79,7 @@ Resources:
       VpcId:
         Fn::ImportValue:
           !Sub "cfn-exemplo-rnp-vpc-Vpc"
-      GroupDescription: Gerencia acessos ao gateway da rede privada
+      GroupDescription: Gerencia acessos ao servidor de aplicacao
       SecurityGroupIngress:
       - CidrIp: 172.17.0.0/16
         FromPort: 22
@@ -35,7 +90,7 @@ Resources:
         IpProtocol: tcp
         ToPort: 80
 
-## Cria uma interface de rede para nosso gateway
+## Cria uma interface de rede para nosso servidor de aplicacao
   AppXface:
     Type: AWS::EC2::NetworkInterface
     Properties:
@@ -96,3 +151,14 @@ Resources:
           /opt/aws/bin/cfn-init --stack cfn-exemplo-rnp-app --resource Ec2App --region us-east-1
           systemctl start cfn-hup
           systemctl enable cfn-hup
+
+          cd /tmp
+          wget https://wordpress.org/latest.tar.gz
+          tar xvf latest.tar.gz
+          yum install -y httpd jq
+          amazon-linux-extras install -y php7.3
+          yum install -y php-pecl-mcrypt php-pecl-imagick php-mbstring
+          systemctl enable httpd
+          systemctl start httpd
+          rsync -r /tmp/wordpress/. /var/www/html
+          chown -R apache:apache /var/www/
